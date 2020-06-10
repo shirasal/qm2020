@@ -1,0 +1,617 @@
+---
+title: "Final Report"
+author: "Itai Namir and Shira Salingre"
+date: "24/05/2020"
+output: pdf_document
+---
+
+```{r include=FALSE, hold = TRUE}
+# Load libraries
+library(pacman)
+p_load(dplyr,tidyr,vegan,car,mvabund,ggplot2,lme4,DHARMa,pwr,r2glmm,MuMIn,tidyverse,magrittr, GGally)
+
+# Load functions
+source("QM_functions_ofri.R")
+pcacircle = function (pca.res)
+{
+  # Draws a circle of equilibrium contribution on a PCA plot 
+  # generated from a vegan analysis.
+  # vegan uses special constants for its outputs, hence 
+  # the 'const' value below.
+  p = length(pca.res$CA$eig) # Get the number of components
+  const = attr(summary(pca.res),"const") # Get the scaling constant from the PCA summary
+  radius = const * (2/p)^0.5
+  symbols(0, 0, circles=radius, inches=FALSE, add=TRUE, fg=2)
+  species = scores(pca.res,scaling=1,display='sp')
+  # Calculate the arrow lengths
+  spec.dist = sqrt(species[,1]^2+species[,2]^2)
+  # Get only the significant species:
+  sig.spec = spec.dist[spec.dist > radius]
+  # Sort from highest to lowest and return the sorted values:
+  return(sort(sig.spec,decreasing=TRUE))
+}
+
+```
+
+# Section 1: Single population
+
+## Estimations
+
+(1) Estimated population size  
+95% confidence interval
+
+(2) Lloyd's Index of Patchiness (LP)  
+
+## Statistical tests
+
+(1) Dispersion pattern  
+Is it significantly different from random?  
+Use **Goodness of fit** test  
+
+(2) LP  
+Significantly different from random?  
+Use **randomisation**  
+
+(3) Geographical gradient  
+Use **randomisation**  
+
+# Section 2: Species richness of fish in knolls in Eilat sites
+
+```{r}
+knoll.info <- read_csv("knoll_info.csv",
+                       col_types = cols(site = col_factor(),
+                                        name = col_factor(),
+                                        knoll = col_factor(ordered = TRUE)))
+str(knoll.info)
+
+```
+
+## Data summary
+
+- how many knolls were sampled
+```{r}
+knoll.info %>% 
+  group_by(site) %>% 
+  summarise(n_knolls = n_distinct(knoll))
+
+```
+
+- the range of environmental variables measured
+```{r}
+knoll.info %>% 
+  select(diameter, knoll_depth, surf_area) %>% 
+  summary
+
+knoll.info %>% ggplot() +
+  geom_jitter(aes(x = knoll, y = knoll_depth, colour = site), alpha = 0.6, show.legend = FALSE) +
+  facet_wrap(vars(site)) +
+  labs(x = "knoll ID", y = "knoll depth")
+
+knoll.info %>% ggplot() +
+  geom_jitter(aes(x = knoll, y = surf_area, colour = site), alpha = 0.6, show.legend = FALSE) +
+  facet_wrap(vars(site)) +
+  labs(x = "knoll ID", y = "surface area [m^2]")
+
+knoll.info %>% ggplot() +
+  geom_jitter(aes(x = surf_area, y = knoll_depth, colour = site), alpha = 0.6, show.legend = FALSE) +
+  facet_wrap(vars(site)) +
+  labs(x = "knoll area", y = "knoll depth")
+
+
+```
+
+- how many species were observed in total and the frequency of the occurrence (incidence) across knolls
+```{r}
+knoll.info %>% group_by(site) %>% summarise(max_richness = max(S))
+  
+```
+
+**Linear Model Assumptions:**
+```{r}
+area <- knoll.info %>% ggplot() +
+  geom_histogram(aes(x = surf_area), fill = '#f39bd3', alpha = 0.6, bins = 10) +
+  xlab("Knoll area") + 
+  ylab("")
+
+log_area <- knoll.info %>% ggplot() +
+  geom_histogram(aes(x = log(surf_area)), fill = '#f39bd3', alpha = 0.6, bins = 10) +
+  xlab("Knoll area (log-transformed)") + 
+  ylab("")
+
+rich <- knoll.info %>% ggplot() +
+  geom_histogram(aes(x = S), fill = '#1b7883', alpha = 0.6, bins = 10) +
+  xlab("Species richness") + 
+  ylab("")
+
+log_rich <- knoll.info %>% ggplot() +
+  geom_histogram(aes(x = log(S)), fill = '#1b7883', alpha = 0.6, bins = 10) +
+  xlab("Species richness (log-transformed)") + 
+  ylab("")
+
+gridExtra::grid.arrange(area, log_area, rich, log_rich, nrow = 2, ncol = 2)
+
+```
+**MAIN POINTS**
+We were looking at the assumptions of linear model:
+- Independence - if this assumption is not fulfilled, need to add a random or mixed effect (e.g. nested) :: There is dependence in surveyors --> mixed effect (random intercept)
+- Linearity - to resolve no linearity we can use a transformation or look at other relationship between y and x :: There is a linear relationship between area and ricness but the *area was log transformed*
+- Normality = for each x, y is normally distributed :: if *richness is log-transfomed*
+- Homoscedasticity = variance of resduals is constant over x. If this assumption is not met we can resort to GLMM. 
+No need for genarlised linear model when the assumption of homoscedasticity is fulfilled. residuals distribute normally.
+
+Correlation between environmental variables and species richness ---- Change this to only env. variables as part of assumtptions check
+
+```{r message=FALSE, warning=FALSE}
+GGally::ggpairs(knoll.info, progress = FALSE,
+                columns = c("S", "knoll_depth", "surf_area"),
+                mapping = aes(colour = site))
+
+```
+
+No correlation/relationship between variables and species richness except area!
+
+
+```{r}
+knoll.info %>% 
+  ggplot() + 
+  geom_point(aes(log(surf_area), log(S), colour = site), cex = 2) +
+  facet_wrap(vars(site))
+
+# No need for log transformation
+
+knoll.info %>% 
+  ggplot() + 
+  geom_point(aes(surf_area, S, colour = site), cex = 2) +
+  facet_wrap(vars(site))
+
+knoll.info %>% 
+  ggplot() + 
+  geom_point(aes(knoll_depth, S, colour = site), cex = 2) +
+  facet_wrap(vars(site))
+
+
+```
+Surfae area relationship to richness looks linear, no transformation needed. Depth doesn't appear to have a relationship with richness in most sites. The nature reserve, where more species were sampled, show a little bit of linear trend. The range of depth is very small, between 1.7-6.9 m so we don't expect to see a trend here.
+
+
+## Assessment
+
+Which factor(s) best explain the observed variation in richness? Make sure to include a model accounting for the *relationships between richness and knoll area/size*.  
+If you used *model selection*, present all the models you tested and explain how well they were supported by the data, and your criteria for choosing the best model(s). If relevant, perform *model averaging* and identify the relative importance of the different explanatory variables. 
+Clearly show all tests of model assumptions. 
+
+
+## Models
+
+**Syntax for random effects**  
+(1 | var) random intercept  
+(fixed_predictor | var) random slope
+
+y = b0 + b1*x + error
+
+mean y = intercept + slope * x
+
+Run linear models:
+```{r}
+# linear model of richness as function of surface area (fixed)
+lm_area <- lm(log(S) ~ log(surf_area), data = knoll.info) 
+summary(lm_area)
+
+# linear model of richness as function of surface area and depth (both fixed)
+lm_area_depth <- lm(log(S) ~ log(surf_area) + knoll_depth, data = knoll.info)
+summary(lm_area_depth)
+
+# linear model of richness as function of surface area, depth and site (all fixed)
+lm_area_depth_site <- lm(log(S) ~ log(surf_area) + knoll_depth + site, data = knoll.info)
+summary(lm_area_depth_site)
+
+# linear model of richness as function of surface area (fixed), depth (fixed), site (fixed) and name (random int)
+lmr_area_depth_site_rname <- lmer(log(S) ~ log(surf_area) + knoll_depth + site + (1 | name), REML = FALSE, data = knoll.info) # REML = FALSE so we can do model selection
+summary(lmr_area_depth_site_rname)
+# no independence between surveyors
+
+# linear model of richness as function of surface area (fixed), depth (fixed), and name (random int)
+lmr_area_depth_rname <- lmer(log(S) ~ log(surf_area) + knoll_depth + (1 | name), REML = FALSE, data = knoll.info)
+summary(lmr_area_depth_rname)
+
+```
+Rule of thumb for random effect - at least 5 levels.  
+Random intercept because there is a good chance that some observers are 'better' than others in identifying species. Not slope because slope would mean that, for example, if there are more fish - the sampler will sample more and when there are less fish - the sampler will sample less, but I have no reason to think that so I keep the slope constant.  
+
+## Model selection by AIC
+
+```{r}
+model.list <- list(lm_area, lm_area_depth, lm_area_depth_site, lmr_area_depth_site_rname, lmr_area_depth_rname)
+names(model.list) <- c("area", "area_depth", "area_depth_site", "area_depth_site_rname", "area_depth_rname")
+models.table <- model.sel(model.list)
+
+models.table
+
+```
+
+```{r}
+best_model <- lmr_area_depth_site_rname
+```
+
+
+Knoll area and depth are the most affecting variables, while for most parts the site doesn't play a significant role, the nature reserve site (NR) has a p-value of 0.05, which can point out that the fact that it's protected is actually affecting the richness.  
+
+Check for highly correlated variables:  
+```{r}
+vif(best_model)
+
+```
+no VIF is larger than 4 (Hair et al., 2010) so we have no variables to drop.  
+
+**identify the relative importance of the different explanatory variables** 
+
+```{r}
+summary(best_model) # t-value > 2 | < -2 is significant.
+
+# r-squared
+MuMIn::r.squaredLR(best_model)
+
+```
+
+## Diagnostics
+
+Residuals
+
+```{r}
+DHARMa::simulateResiduals(fittedModel = best_model, plot = TRUE, refit = TRUE)
+DHARMa::plotQQunif()
+sjPlot::plot_model(best_model, type = 'diag', se = TRUE, show.p = TRUE, grid = TRUE)
+
+
+```
+
+**General vs. Generalised linear model**
+We thought that the homoscedasticity assumption is met in our data, no a-priori reason that it won't. After running the general linear model and choosing the best one etc. we looked at this assumption and found there could be some heteroscedasticity, but not sure how strong it. So we tried glmm and got a less strong fit 0.6 compared to 0.9 with lm.
+
+
+Predictive power
+
+```{r}
+area_cor <- cor(log(knoll.info$S), log(knoll.info$surf_area))
+print(paste("Pearson's correlation for :", area_cor))
+pwr::pwr.r.test(r = area_cor, n = nrow(knoll.info))
+
+depth_cor <- cor(log(knoll.info$S), knoll.info$knoll_depth)
+print(paste("Pearson's correlation for :", depth_cor))
+pwr::pwr.r.test(r = depth_cor, n = nrow(knoll.info))
+
+```
+
+
+# Section 3: Structure of the reef-fish assemblages
+
+```{r warning=FALSE}
+fish_data <- read_csv("transect_data.csv", col_types = cols(Name = col_factor(),
+                                                            Site = col_factor(),
+                                                            Time = col_factor(),
+                                                            Depth = col_factor(),
+                                                            Transect = col_factor(),
+                                                            Species = col_factor()))
+str(fish_data)
+
+
+```
+
+**Summary of our data**  
+
+- how many belts were sampled?  
+```{r}
+fish_data %>% distinct(Time, Site, Transect, Depth) %>% summarise(n_trans = n())
+
+```
+
+Data wrangling: Fix species names and remove observations of species that were not recognised to the species level:
+```{r}
+# Fix species names
+fish_data$Species <- trimws(fish_data$Species) # Remove whitespace
+fish_data %<>%
+  mutate(Species = stringr::str_to_sentence(Species)) %>%  # Species names spelt correctly
+  filter(!str_detect(Species, " fish"), !str_detect(Species, " spp^"), !str_detect(Species, " spp.")) %>%
+  mutate_at(vars(Time, Depth), as.factor) # Change Time & Depth to factors
+
+```
+
+- the range of environmental variables measured  
+```{r}
+fish_data %>%
+  select(Time, Site, Depth, Coral_Cover, Rock_Cover, Sand_Cover) %>%
+  ggpairs(title = "Environmental variables", switch = "y", progress = FALSE)
+
+```
+
+- how many species were observed in total?
+```{r}
+fish_data %>% distinct(Species)
+```
+87 species before removal.
+
+- the frequency of the occurrence (incidence) the site
+
+Create a community matrix and an environmental data frame
+                             **DO NOT RUN THIS PART MORE THAN ONCE!!**
+```{r}
+# The following rows are somehow problematic:
+fish_data %>% filter(row_number() == 40 | row_number() == 39)
+
+# Maybe there's some kond of problem with the name, so we'll change it
+fish_data[39,9] <- "Zebrasoma xanthurum"
+fish_data[40,9] <- "Zebrasoma xanthurum"
+
+# This wasn't helpful so I'll drop one of them
+fish_data %<>% filter(row_number() != 39)
+
+```
+
+```{r}
+com_mtx <- fish_data %>%
+  select(-count) %>%
+  spread(key = Species, value = sum, fill = 0)
+
+# Order according to 'Time' and add running transect number
+com_mtx %<>% arrange(Time) %>% select(Transect, Name, Site, Time, Depth, 6:ncol(.)) %>% 
+  mutate(Transect = seq(1, length(.$Transect), 1))
+
+
+# Create abundance matrix
+abnd_mtx <- com_mtx %>%
+  select(-c(Time, Name, Site, Depth, Coral_Cover, Rock_Cover, Sand_Cover)) %>% 
+  column_to_rownames("Transect")
+
+# Create environmental data frame
+env_df <- com_mtx %>% 
+  select(Transect, Name, Site, Time, Depth, Coral_Cover, Rock_Cover, Sand_Cover) %>% 
+  column_to_rownames("Transect")
+
+```
+
+## Data exploration
+
+Abundance distribution
+```{r}
+# Histogram of abundances
+par(mfrow = c(2,1))
+hist(colSums(abnd_mtx), xlab = "Abundance", col = "grey", main = NULL)
+hist(log(colSums(abnd_mtx)), xlab = "Abundance (log)", col = "grey", main = NULL)
+mtext("Abundance histograms of all species", side = 1, line = -21, outer = TRUE, font = 2)
+par(mfrow = c(1,1))
+```
+
+For each species
+```{r eval=FALSE}
+histograms <- lapply(1:length(abnd_mtx), function(i) hist(abnd_mtx[,i], main = colnames(abnd_mtx)[i], xlab = "Abundance"))
+
+histoo <- function(column){
+  ggplot() +
+    aes(x = column) +
+    geom_histogram(bins = 15, col = "black", fill = "lightgrey") +
+    xlab("abundance")
+}
+
+histograms <- lapply(1:length(abnd_mtx), function(i) {
+  histoo(abnd_mtx[,i])+
+    ggtitle(colnames(abnd_mtx)[i])
+}
+)
+
+ggsave(gridExtra::arrangeGrob(grobs = histograms),
+       filename = "sss.png", width = 100, height = 100, units = "cm")
+
+```
+
+![](sss.png)
+
+
+
+Check colinearity between environemntal variables
+```{r}
+pairs(env_df, cex.labels = 1.5)
+
+GGally::ggpairs(env_df, progress = FALSE,
+                mapping = aes(colour = Site),
+                cardinality_threshold = 20)
+
+```
+
+The bottom cover (coral/sand/rock) are obviously correlated.
+
+## nMDS
+
+Since our data includes many zeros, which could create a bias towards these zeros. We can control for this bias with a hellinger transformation
+
+```{r}
+hel_data <- decostand(abnd_mtx, method = "hellinger")
+
+```
+
+
+### Check the required k (dimentions):
+```{r}
+stress_test(hel_data, 2, 5, plot_stress = FALSE)
+```
+
+### Untransformed nMDS
+
+To get to a stress value < 0.2 we need at least k = 3
+
+```{r}
+hel_mds <- metaMDS(hel_data, distance = 'bray', k = 3)
+
+# Plot the MDs results
+plot(hel_mds, type = "n", display = c('sites','species'), main = paste("nMDS on Hellinger transformed data. Stress =", round(hel_mds$stress, 3)))
+text(hel_mds, display = 'species', col = "grey") # plot each species
+text(hel_mds, display = "sites", labels = env_df$Depth, col = as.numeric(env_df$Depth)) # plot the habitats
+
+# Plot the shepard plot:
+stressplot(hel_mds, main = "Shepard plot")
+```
+
+
+Convex hulls:
+```{r}
+plot(hel_mds, display = 'sites', type = 'n') # Prepare the plot area
+title(paste("nMDS - Hellinger transformed. Stress =", round(hel_mds$stress, 3))) # display the stress on the plot title
+text(hel_mds, display = 'sites', labels = env_df$Depth, cex = 0.7, col = as.numeric(env_df$Depth)) # Plot the habitat labels
+text(hel_mds, display = 'species', col = "cornsilk3", cex = 1)
+ordihull(hel_mds, env_df$Depth, col = c("black", "red", "green", "blue")) # Draw 'convex hulls' around the different depths
+
+```
+Convex hulls of depth are quite overlapping but there is a small distinction between the most shallow and the deepest communities. 
+
+Ordisurf:
+```{r}
+plot(hel_mds, display = 'sites', type = 'n') # Prepare the plot area
+title("Coral coverage")
+text(hel_mds, display = 'sites', labels = env_df$Depth, cex = 0.7, col = as.numeric(env_df$Depth)) # Plot the habitat labels
+text(hel_mds, display = 'species', col = "cornsilk3", cex = 1)
+ordisurf(hel_mds, env_df$Coral_Cover, add = TRUE, col = 'purple')
+
+plot(hel_mds, display = 'sites', type = 'n') # Prepare the plot area
+title("Rock coverage")
+text(hel_mds, display = 'sites', labels = env_df$Depth, cex = 0.7, col = as.numeric(env_df$Depth)) # Plot the habitat labels
+text(hel_mds, display = 'species', col = "cornsilk3", cex = 1)
+ordisurf(hel_mds, env_df$Rock_Cover, add = TRUE, col = 'purple')
+
+plot(hel_mds, display = 'sites', type = 'n') # Prepare the plot area
+title("Sand coverage")
+text(hel_mds, display = 'sites', labels = env_df$Depth, cex = 0.7, col = as.numeric(env_df$Depth)) # Plot the habitat labels
+text(hel_mds, display = 'species', col = "cornsilk3", cex = 1)
+ordisurf(hel_mds, env_df$Sand_Cover, add = TRUE, col = 'purple')
+```
+
+- High coral cover seem to charactarise the shallower communities and low (~30%) coral cover in deeper waters.
+
+
+```{r}
+
+envfit(hel_mds, env_df[, -1])
+
+
+```
+
+## PCA
+
+**Assumptions**
+
+- [x] All variables are continuous:
+Only coverage!
+
+- [x] No missing data 
+```{r}
+abnd_mtx %>% is.na() %>% which()  
+```
+
+- [x] Ideally, more objects (rows) than variables (columns), especially when the correlation structure among variables is poor. [At least 3:1].
+```{r}
+nrow(abnd_mtx) > ncol(abnd_mtx)
+nrow(abnd_mtx) / ncol(abnd_mtx)
+```
+
+- [ ] Remove variables with too few observations.  [Controversial]
+Not needed because we use Hellinger (good also for low counts).
+- [x] Check for linearity among variables, e.g. by examining bivariate scatterplots using the "pairs" command. --> Only correlation between covers, not to be used together in PCA.
+```{r}
+env_df_ord <- env_df
+levels(env_df_ord$Depth) <- c("2", "5", "10", "20")
+
+GGally::ggpairs(data = env_df_ord,
+                columns = c("Coral_Cover", "Rock_Cover", "Sand_Cover"),
+                mapping = aes(colour = Depth))
+```
+
+- [x] Check for multivariate normality; assessing the distribution of each variable is a good first step using the "box_plot" command.  [Not necessary if the goal is descriptive].
+```{r}
+boxplot(fish_data[,6:8])
+
+```
+- [x] check for outliers (> 2.5sd).
+```{r}
+outliers_coral <- boxplot(fish_data[,6])$out
+outliers_rock <- boxplot(fish_data[,7])$out
+outliers_sand <- boxplot(fish_data[,8])$out
+# We have outliers in sand_cover
+
+
+```
+
+
+We choose the Hellinger transformation because we have many zeros
+```{r}
+pca_data <- hel_data
+
+```
+
+### Run the analysis using **covariance** matrix
+```{r}
+pca_cov <- rda(pca_data, scale = FALSE) 
+biplot(pca_cov, display = 'species', col = "darkolivegreen2")
+text(pca_cov, display = 'sites', 
+     labels = env_df$Sand_Cover, cex = 0.7, col = as.numeric(env_df$Sand_Cover))
+
+```
+
+Summary
+```{r}
+pca_summary <- summary(pca_cov, display = "sp", )
+pca_summary$cont$importance[,1:6]
+
+species_scores <- scores(pca_cov, display = "species")
+spp_names <- rownames(species_scores)
+species_scores %<>% as_data_frame() %<>% add_column(species = spp_names)
+rm(spp_names)
+species_scores %>% arrange(desc(abs(PC1), abs(PC2)))
+
+```
+
+
+Broken stick:
+```{r}
+eigval_test(pca_cov)
+
+```
+According to Broken stick model the 
+
+### Species contribution
+
+Which species contribute the most to the PCs?  
+
+```{r}
+biplot(pca_cov, scaling = 1, display = 'species', col = "azure4")
+text(pca_cov, display = 'sites', 
+     labels = env_df$Sand_Cover, cex = 0.7, col = as.numeric(env_df$Sand_Cover))
+cont_sps <- pcacircle(pca_cov)
+```
+
+_Chromis viridis_ is the largest contributor:  
+```{r}
+# Most important species:
+site_scores <- scores(pca_cov, scaling = 1, display = 'wa')
+sp_name <- names(cont_sps)[1]
+pc1 <- ggplot(abnd_mtx) +
+  aes(x = abnd_mtx[,sp_name], y = site_scores[,1]) +
+  geom_jitter(alpha = 0.5, cex = 2) +
+  labs(title = "PC1", x = "Abundance", y = "PC scores")
+pc2 <- ggplot(abnd_mtx) +
+  aes(x = abnd_mtx[,sp_name], y = site_scores[,2]) +
+  geom_jitter(alpha = 0.5, cex = 2) +
+  labs(title = "PC2", x = "Abundance", y = "PC scores")
+
+gridExtra::grid.arrange(pc1, pc2, nrow = 1, top = sp_name)
+
+```
+
+Fit environmental variables on the PCA results:  
+```{r}
+envfit(pca_cov, env_df[, -1])
+
+```
+
+
+## Section 3B 
+Perform sample-based and individual-based rarefaction, and evaluate differences in species richness and effective number of species between depth categories (you may pool 2-5m and 10-20m). Relate these findings to the results of the envfit (above) regarding the differences in assemblage structure between depth categories. 
+
+Briefly summarize your main conclusions.
